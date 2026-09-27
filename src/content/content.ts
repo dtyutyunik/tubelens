@@ -1,31 +1,27 @@
 /**
  * Content script: watches YouTube's SPA navigation, detects channel pages,
- * extracts the channel ID, and mounts the Shadow-DOM panel.
+ * extracts the channel ID (meta → canonical → /channel/ URL fallback chain),
+ * and mounts the Shadow-DOM panel.
+ *
+ * No React hooks here by design — this is vanilla TS; React is only used to
+ * render the panel into the shadow root.
  */
 import React from 'react';
 import { createRoot, Root } from 'react-dom/client';
 import { SimilarPanel, PanelState } from './panel';
+import { isChannelPath, resolveChannelId } from '../lib/channel-detect';
 import { LookupResult } from '../lib/types';
 
 const ROOT_ID = 'tubelens-root';
 
-// Matches /@handle, /channel/UC..., /c/custom, /user/legacy (with optional trailing slash)
-const CHANNEL_RE = /^\/(?:@[^/]+|channel\/[^/]+|c\/[^/]+|user\/[^/]+)\/?$/;
-
 let root: Root | null = null;
 let currentChannelId: string | null = null;
 
-function isChannelPage(): boolean {
-  return CHANNEL_RE.test(window.location.pathname);
-}
-
-/** Most reliable channel-ID source on a channel page. */
-function getChannelId(): string | null {
+/** DOM read, kept separate from the pure resolveChannelId() for testability. */
+function readChannelId(): string | null {
   const meta = document.querySelector<HTMLMetaElement>('meta[itemprop="channelId"]');
-  if (meta?.content) return meta.content;
-  // Fallback: /channel/UC... URLs carry it directly
-  const m = window.location.pathname.match(/^\/channel\/([^/]+)/);
-  return m ? m[1] : null;
+  const canonical = document.querySelector<HTMLLinkElement>('link[rel="canonical"]');
+  return resolveChannelId(meta?.content, canonical?.href, window.location.pathname);
 }
 
 function ensureRoot(): Root {
@@ -50,11 +46,11 @@ function unmount(): void {
 }
 
 async function refresh(): Promise<void> {
-  if (!isChannelPage()) {
+  if (!isChannelPath(window.location.pathname)) {
     unmount();
     return;
   }
-  const channelId = getChannelId();
+  const channelId = readChannelId();
   if (!channelId) {
     unmount();
     return;
@@ -73,7 +69,13 @@ async function refresh(): Promise<void> {
       else if (res.error === 'QUOTA_EXHAUSTED') render({ kind: 'quota', message: res.message });
       else render({ kind: 'error', message: res.message });
     } else {
-      render({ kind: 'results', channels: res.channels, cached: res.cached, quota: res.quota });
+      render({
+        kind: 'results',
+        channels: res.channels,
+        cached: res.cached,
+        quota: res.quota,
+        degraded: res.degraded,
+      });
     }
   } catch (e) {
     render({ kind: 'error', message: `Extension error: ${String(e)}` });
