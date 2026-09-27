@@ -24,8 +24,9 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",
     "lint:fix": "eslint src --fix",
-    "check": "npm run typecheck && npm run lint && npm test"
+    "check": "npm run typecheck && npm run lint && npm test",
+    "package": "node scripts/package.mjs"
   },
   "type": "module",
-  "version": "0.1.0"
+  "version": "0.2.0"
 }
