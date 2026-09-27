@@ -42,6 +42,10 @@ export interface LookupSuccess {
   quota: { used: number; budget: number };
   /** Present when some seed videos failed but the rest still produced results. */
   degraded?: { seedsUsed: number; seedsFailed: number };
+  /** T5: true when these results are past the TTL, shown only because quota ran out. */
+  stale?: boolean;
+  /** Unix ms of when the results were fetched; shown for stale results. */
+  fetchedAt?: number;
 }
 
 export type LookupResult = LookupSuccess | LookupError;

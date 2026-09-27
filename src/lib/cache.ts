@@ -38,10 +38,10 @@ export async function getCachedSimilar(channelId: string): Promise<SimilarChanne
   const stored = await chrome.storage.local.get(key);
   const entry = stored[key] as CacheEntry | undefined;
   if (!entry) return null;
-  if (Date.now() - entry.fetchedAt > TTL_MS) {
-    await chrome.storage.local.remove(key);
-    return null;
-  }
+  // NOTE: expired entries are intentionally NOT deleted here. The T5 stale
+  // fallback (getCachedEntry) needs them to survive when quota is exhausted;
+  // they get overwritten by the next fresh setCachedSimilar.
+  if (Date.now() - entry.fetchedAt > TTL_MS) return null;
   await touchIndex(key);
   return entry.channels;
 }
@@ -52,3 +52,28 @@ export async function setCachedSimilar(channelId: string, channels: SimilarChann
   await chrome.storage.local.set({ [key]: entry });
   await touchIndex(key);
 }
+
+/**
+ * Remove one channel's cached result. Used by manual refresh (T6) to force a
+ * fresh lookup; quota pre-check still applies in the service worker.
+ */
+export async function deleteCachedSimilar(channelId: string): Promise<void> {
+  await chrome.storage.local.remove(keyFor(channelId));
+}
+
+/**
+ * Raw entry regardless of age. Powers T5's stale-cache fallback: when quota is
+ * exhausted we would rather show last week's results (labeled as stale) than a
+ * dead error screen.
+ */
+export async function getCachedEntry(
+  channelId: string,
+): Promise<{ channels: SimilarChannel[]; fetchedAt: number } | null> {
+  const key = keyFor(channelId);
+  const stored = await chrome.storage.local.get(key);
+  const entry = stored[key] as CacheEntry | undefined;
+  return entry ? { channels: entry.channels, fetchedAt: entry.fetchedAt } : null;
+}
+
+/** TTL in ms, exported for tests and the options-page copy. */
+export { TTL_MS };

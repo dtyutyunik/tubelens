@@ -45,7 +45,7 @@ function unmount(): void {
   currentChannelId = null;
 }
 
-async function refresh(): Promise<void> {
+async function refresh(force = false): Promise<void> {
   if (!isChannelPath(window.location.pathname)) {
     unmount();
     return;
@@ -55,7 +55,7 @@ async function refresh(): Promise<void> {
     unmount();
     return;
   }
-  if (channelId === currentChannelId) return; // already showing for this channel
+  if (channelId === currentChannelId && !force) return; // already showing for this channel
   currentChannelId = channelId;
 
   render({ kind: 'loading' });
@@ -63,6 +63,7 @@ async function refresh(): Promise<void> {
     const res = (await chrome.runtime.sendMessage({
       type: 'TUBELENS_GET_SIMILAR',
       channelId,
+      forceRefresh: force,
     })) as LookupResult;
     if ('error' in res) {
       if (res.error === 'NO_API_KEY') render({ kind: 'needs-key', message: res.message });
@@ -75,6 +76,9 @@ async function refresh(): Promise<void> {
         cached: res.cached,
         quota: res.quota,
         degraded: res.degraded,
+        stale: res.stale,
+        fetchedAt: res.fetchedAt,
+        onRefresh: () => void refresh(true),
       });
     }
   } catch (e) {

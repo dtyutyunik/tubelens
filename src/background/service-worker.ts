@@ -17,7 +17,7 @@ import {
 } from '../lib/youtube-api';
 import { getSettings, saveSettings } from '../lib/settings';
 import { getUsage, canSpend, recordSpend, estimateLookupCost, DAILY_BUDGET } from '../lib/quota';
-import { getCachedSimilar, setCachedSimilar } from '../lib/cache';
+import { getCachedSimilar, setCachedSimilar, deleteCachedSimilar, getCachedEntry } from '../lib/cache';
 import {
   buildSimilarChannels,
   PipelineApi,
@@ -32,21 +32,41 @@ const BETWEEN_CALLS_MS = 150;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function handleGetSimilar(channelId: string): Promise<LookupResult> {
+async function handleGetSimilar(channelId: string, forceRefresh = false): Promise<LookupResult> {
   const settings = await getSettings();
   if (!settings.apiKey) {
     return { error: 'NO_API_KEY', message: 'Set your YouTube API key on the options page.' };
   }
 
+  // T6: manual refresh bypasses the cache (quota pre-check still applies below).
+  if (forceRefresh) await deleteCachedSimilar(channelId);
+
   const cached = await getCachedSimilar(channelId);
   if (cached) {
     const usage = await getUsage();
-    return { channels: cached, cached: true, quota: { used: usage.used, budget: DAILY_BUDGET } };
+    const entry = await getCachedEntry(channelId);
+    return {
+      channels: cached,
+      cached: true,
+      quota: { used: usage.used, budget: DAILY_BUDGET },
+      fetchedAt: entry?.fetchedAt,
+    };
   }
 
   const estimate = estimateLookupCost(SEED_VIDEOS);
   if (!(await canSpend(estimate))) {
+    // T5: quota exhausted — serve stale results (labeled) instead of a dead end.
+    const stale = await getCachedEntry(channelId);
     const usage = await getUsage();
+    if (stale) {
+      return {
+        channels: stale.channels,
+        cached: true,
+        stale: true,
+        fetchedAt: stale.fetchedAt,
+        quota: { used: usage.used, budget: DAILY_BUDGET },
+      };
+    }
     return {
       error: 'QUOTA_EXHAUSTED',
       message: `Estimated ${estimate} units needed, only ${DAILY_BUDGET - usage.used} left today. Quota resets at midnight Pacific.`,
@@ -112,7 +132,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   (async () => {
     switch (msg?.type) {
       case 'TUBELENS_GET_SIMILAR':
-        return handleGetSimilar(msg.channelId);
+        return handleGetSimilar(msg.channelId, msg.forceRefresh === true);
       case 'TUBELENS_GET_SETTINGS':
         return { settings: await getSettings() };
       case 'TUBELENS_SAVE_SETTINGS':
