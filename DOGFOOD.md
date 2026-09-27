@@ -14,7 +14,7 @@
 |---|---|---|---|---|
 | 1 | | | | |
 
-\* "New small channel" = under the subscriber filter, and a channel you had never heard of before.
+\* "New small channel" = under the subscriber filter **and not in your subscriptions** (crosscheck against SubShelf / youtube.com/feed/channels). Not-subscribed is the objective novelty test — a channel you're already subbed to isn't a discovery no matter how small it is. "Never heard of it" is a bonus, not the criterion.
 
 ## Tuning knobs (change one at a time, in options or `service-worker.ts`)
 

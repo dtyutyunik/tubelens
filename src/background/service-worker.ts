@@ -38,24 +38,27 @@ async function handleGetSimilar(channelId: string, forceRefresh = false): Promis
     return { error: 'NO_API_KEY', message: 'Set your YouTube API key on the options page.' };
   }
 
-  // T6: manual refresh bypasses the cache (quota pre-check still applies below).
-  if (forceRefresh) await deleteCachedSimilar(channelId);
-
-  const cached = await getCachedSimilar(channelId);
-  if (cached) {
-    const usage = await getUsage();
-    const entry = await getCachedEntry(channelId);
-    return {
-      channels: cached,
-      cached: true,
-      quota: { used: usage.used, budget: DAILY_BUDGET },
-      fetchedAt: entry?.fetchedAt,
-    };
+  // T6: manual refresh skips the fresh-cache hit below. The cache is only
+  // deleted AFTER the quota pre-check passes — deleting first would destroy
+  // good cached results and leave the user with an error screen.
+  if (!forceRefresh) {
+    const cached = await getCachedSimilar(channelId);
+    if (cached) {
+      const usage = await getUsage();
+      const entry = await getCachedEntry(channelId);
+      return {
+        channels: cached,
+        cached: true,
+        quota: { used: usage.used, budget: DAILY_BUDGET },
+        fetchedAt: entry?.fetchedAt,
+      };
+    }
   }
 
   const estimate = estimateLookupCost(SEED_VIDEOS);
   if (!(await canSpend(estimate))) {
     // T5: quota exhausted — serve stale results (labeled) instead of a dead end.
+    // The cache is intact here because force-refresh deletion happens below.
     const stale = await getCachedEntry(channelId);
     const usage = await getUsage();
     if (stale) {
@@ -73,21 +76,42 @@ async function handleGetSimilar(channelId: string, forceRefresh = false): Promis
     };
   }
 
-  // Adapt real API calls to the pipeline interface; count actual units as we go.
-  let statsUnits = 0;
+  // Quota confirmed — now it's safe to drop the cache for a forced refresh.
+  if (forceRefresh) await deleteCachedSimilar(channelId);
+
+  // Adapt real API calls to the pipeline interface. Spend is accumulated per
+  // call (in `finally`, so failed calls count too — YouTube charges quota
+  // even for error responses) and recorded even when the lookup fails below.
+  let spent = 0;
   const api: PipelineApi = {
-    getUploadsPlaylistId: (cid) => getUploadsPlaylistId(settings.apiKey, cid),
-    getRecentVideoIds: (pid, n) => getRecentVideoIds(settings.apiKey, pid, n),
+    getUploadsPlaylistId: async (cid) => {
+      try {
+        return await getUploadsPlaylistId(settings.apiKey, cid);
+      } finally {
+        spent += COST.list;
+      }
+    },
+    getRecentVideoIds: async (pid, n) => {
+      try {
+        return await getRecentVideoIds(settings.apiKey, pid, n);
+      } finally {
+        spent += COST.list;
+      }
+    },
     getRelatedChannelIds: async (vid, n) => {
       try {
         return await getRelatedChannelIds(settings.apiKey, vid, n);
       } finally {
+        spent += COST.search;
         await sleep(BETWEEN_CALLS_MS); // pace search calls to avoid 429s
       }
     },
     getChannelStats: async (ids) => {
-      statsUnits = Math.max(1, Math.ceil(ids.length / 50)) * COST.list;
-      return getChannelStats(settings.apiKey, ids);
+      try {
+        return await getChannelStats(settings.apiKey, ids);
+      } finally {
+        spent += Math.max(1, Math.ceil(ids.length / 50)) * COST.list;
+      }
     },
   };
 
@@ -99,8 +123,6 @@ async function handleGetSimilar(channelId: string, forceRefresh = false): Promis
       maxResults: settings.maxResults,
     });
 
-    // Actual spend: 2 list calls + one search per attempted seed + stats batches.
-    const spent = 2 * COST.list + (seedsUsed + seedsFailed) * COST.search + statsUnits;
     await recordSpend(spent);
     await setCachedSimilar(channelId, channels);
 
@@ -112,6 +134,8 @@ async function handleGetSimilar(channelId: string, forceRefresh = false): Promis
       degraded: seedsFailed > 0 ? { seedsUsed, seedsFailed } : undefined,
     };
   } catch (e) {
+    // Partial spend still counts — the searches already ran.
+    await recordSpend(spent);
     if (e instanceof NoVideosError || e instanceof NoRelatedDataError) {
       return { error: 'API_ERROR', message: e.message };
     }

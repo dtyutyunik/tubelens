@@ -26,7 +26,8 @@ async function apiGet<T>(path: string, params: Record<string, string>, apiKey: s
 
   let res: Response;
   try {
-    res = await fetch(url.toString());
+    // Bound the wait: a hung googleapis call must not stall the lookup forever.
+    res = await fetch(url.toString(), { signal: AbortSignal.timeout(30_000) });
   } catch (e) {
     throw new YouTubeApiError('NETWORK', 0, `Network error calling ${path}: ${String(e)}`);
   }

@@ -40,6 +40,9 @@ function render(state: PanelState): void {
 }
 
 function unmount(): void {
+  // Unmount the React tree first so effect cleanups run (Esc listener);
+  // removing the node without this leaks listeners on every navigation.
+  root?.unmount();
   document.getElementById(ROOT_ID)?.remove();
   root = null;
   currentChannelId = null;
@@ -65,6 +68,9 @@ async function refresh(force = false): Promise<void> {
       channelId,
       forceRefresh: force,
     })) as LookupResult;
+    // A newer SPA navigation may have started while we were waiting —
+    // never let a stale response clobber the current channel's panel.
+    if (channelId !== currentChannelId) return;
     if ('error' in res) {
       if (res.error === 'NO_API_KEY') render({ kind: 'needs-key', message: res.message });
       else if (res.error === 'QUOTA_EXHAUSTED') render({ kind: 'quota', message: res.message });
