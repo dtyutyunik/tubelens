@@ -1,6 +1,10 @@
 /**
  * Service worker: owns all YouTube API traffic, quota accounting, and cache.
  * The content script never touches the API key.
+ *
+ * Orchestration lives in lib/pipeline.ts (injected client → unit-testable);
+ * this file adapts the real youtube-api.ts functions and owns the chrome.*
+ * side: settings, quota, cache, message routing.
  */
 import {
   getUploadsPlaylistId,
@@ -14,7 +18,12 @@ import {
 import { getSettings, saveSettings } from '../lib/settings';
 import { getUsage, canSpend, recordSpend, estimateLookupCost, DAILY_BUDGET } from '../lib/quota';
 import { getCachedSimilar, setCachedSimilar } from '../lib/cache';
-import { rankChannels } from '../lib/similarity';
+import {
+  buildSimilarChannels,
+  PipelineApi,
+  NoVideosError,
+  NoRelatedDataError,
+} from '../lib/pipeline';
 import { LookupResult } from '../lib/types';
 
 const SEED_VIDEOS = 5;
@@ -44,39 +53,48 @@ async function handleGetSimilar(channelId: string): Promise<LookupResult> {
     };
   }
 
+  // Adapt real API calls to the pipeline interface; count actual units as we go.
+  let statsUnits = 0;
+  const api: PipelineApi = {
+    getUploadsPlaylistId: (cid) => getUploadsPlaylistId(settings.apiKey, cid),
+    getRecentVideoIds: (pid, n) => getRecentVideoIds(settings.apiKey, pid, n),
+    getRelatedChannelIds: async (vid, n) => {
+      try {
+        return await getRelatedChannelIds(settings.apiKey, vid, n);
+      } finally {
+        await sleep(BETWEEN_CALLS_MS); // pace search calls to avoid 429s
+      }
+    },
+    getChannelStats: async (ids) => {
+      statsUnits = Math.max(1, Math.ceil(ids.length / 50)) * COST.list;
+      return getChannelStats(settings.apiKey, ids);
+    },
+  };
+
   try {
-    let spent = 0;
-    const playlistId = await getUploadsPlaylistId(settings.apiKey, channelId);
-    spent += COST.list;
-
-    const videoIds = await getRecentVideoIds(settings.apiKey, playlistId, SEED_VIDEOS);
-    spent += COST.list;
-    if (videoIds.length === 0) {
-      return { error: 'API_ERROR', message: 'This channel has no public videos to seed from.' };
-    }
-
-    const relatedLists: string[][] = [];
-    for (const vid of videoIds) {
-      relatedLists.push(await getRelatedChannelIds(settings.apiKey, vid, RELATED_PER_VIDEO));
-      spent += COST.search;
-      await sleep(BETWEEN_CALLS_MS);
-    }
-
-    const unique = [...new Set(relatedLists.flat())].filter((id) => id !== channelId);
-    const stats = await getChannelStats(settings.apiKey, unique);
-    spent += Math.max(1, Math.ceil(unique.length / 50)) * COST.list;
-
-    await recordSpend(spent);
-
-    const channels = rankChannels(channelId, relatedLists, stats, {
+    const { channels, seedsUsed, seedsFailed } = await buildSimilarChannels(api, channelId, {
+      seedVideos: SEED_VIDEOS,
+      relatedPerVideo: RELATED_PER_VIDEO,
       maxSubs: settings.maxSubs,
       maxResults: settings.maxResults,
     });
+
+    // Actual spend: 2 list calls + one search per attempted seed + stats batches.
+    const spent = 2 * COST.list + (seedsUsed + seedsFailed) * COST.search + statsUnits;
+    await recordSpend(spent);
     await setCachedSimilar(channelId, channels);
 
     const usage = await getUsage();
-    return { channels, cached: false, quota: { used: usage.used, budget: DAILY_BUDGET } };
+    return {
+      channels,
+      cached: false,
+      quota: { used: usage.used, budget: DAILY_BUDGET },
+      degraded: seedsFailed > 0 ? { seedsUsed, seedsFailed } : undefined,
+    };
   } catch (e) {
+    if (e instanceof NoVideosError || e instanceof NoRelatedDataError) {
+      return { error: 'API_ERROR', message: e.message };
+    }
     if (e instanceof YouTubeApiError) {
       if (e.code === 'QUOTA_EXCEEDED') {
         return { error: 'QUOTA_EXHAUSTED', message: e.message };

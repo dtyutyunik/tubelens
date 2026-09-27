@@ -40,6 +40,8 @@ export interface LookupSuccess {
   channels: SimilarChannel[];
   cached: boolean;
   quota: { used: number; budget: number };
+  /** Present when some seed videos failed but the rest still produced results. */
+  degraded?: { seedsUsed: number; seedsFailed: number };
 }
 
 export type LookupResult = LookupSuccess | LookupError;

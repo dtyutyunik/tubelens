@@ -6,7 +6,7 @@ export type PanelState =
   | { kind: 'needs-key'; message?: string }
   | { kind: 'quota'; message?: string }
   | { kind: 'error'; message?: string }
-  | { kind: 'results'; channels: SimilarChannel[]; cached?: boolean; quota?: { used: number; budget: number } };
+  | { kind: 'results'; channels: SimilarChannel[]; cached?: boolean; quota?: { used: number; budget: number }; degraded?: { seedsUsed: number; seedsFailed: number } };
 
 const CSS = `
 .tl-wrap { position: fixed; right: 16px; bottom: 16px; z-index: 2147483647;
@@ -113,7 +113,10 @@ export function SimilarPanel({ state }: { state: PanelState }) {
 
         {state.kind === 'results' && (
           <div className="tl-foot">
-            {state.cached ? 'Served from cache (0 quota used)' : 'Fresh lookup'} · badge = related-video overlap
+            {state.cached ? 'Served from cache (0 quota used)' : 'Fresh lookup'}
+            {state.degraded
+              ? ` · based on ${state.degraded.seedsUsed} of ${state.degraded.seedsUsed + state.degraded.seedsFailed} seed videos (some unavailable)`
+              : ' · badge = related-video overlap'}
           </div>
         )}
       </div>
